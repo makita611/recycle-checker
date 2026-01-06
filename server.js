@@ -4,10 +4,22 @@ const { chromium } = require("playwright");
 const app = express();
 app.use(express.json());
 
+// 稼働時間チェック関数 (日本時間 7:00-24:00)
+const isWithinServiceHours = () => {
+  const now = new Date();
+  const jstNow = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+  const hour = jstNow.getHours();
+  return hour >= 7 && hour < 24;
+};
+
 app.get("/", (req, res) => res.status(200).send("Server is running!"));
 
 app.post("/check", async (req, res) => {
-  const { frameNo, regNo, classCode, serial } = req.body;
+  if (!isWithinServiceHours()) {
+    return res.status(503).json({ error: "【サービス時間外】JARSの稼働時間は7:00〜24:00です。" });
+  }
+
+  const { frameNo, regNo, classCode, serial, isKei } = req.body;
   let browser = null;
 
   try {
@@ -22,40 +34,47 @@ app.post("/check", async (req, res) => {
     });
     const page = await context.newPage();
 
-    // 1. 検索入力画面を開く (KDIS0010)
+    // 1. 新システムURLへアクセス
     await page.goto("https://www1.jars.gr.jp/k/kdis0010.do", { 
       waitUntil: "domcontentloaded",
       timeout: 60000 
     });
 
     // 2. フォーム入力
-    await page.check('input[name="KDIS0010_radSyryuKbn"][value="1"]');
-    await page.fill('input[name="KDIS0010_txtSydiNo4"]', String(frameNo));
-    await page.fill('input[name="KDIS0010_txtSnM"]', String(regNo));
-    await page.selectOption('select[name="KDIS0010_selKn"]', String(classCode));
-    await page.fill('input[name="KDIS0010_txtItrnStiNo"]', String(serial));
+    // 車両区分（1:登録自動車 / 2:軽自動車）
+    const syryuKbn = isKei ? "2" : "1";
+    await page.check(`input[name="KDIS0010_radSyryuKbn"][value="${syryuKbn}"]`);
+    
+    // 車台番号入力
+    await page.fill('input[name="KDIS0010_txtSydiNo"]', String(frameNo));
 
-    // 3. 検索ボタンをクリックして遷移を待つ
-    // 「画面表示中です」のポップアップが出るため、ネットワークが静かになるまで待機
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle', timeout: 60000 }),
-      page.click('input[name="KDIS0010_btnSearch"]')
-    ]);
+    // 支局名 (例: 春日部)
+    await page.fill('input[name="KDIS0010_txtSNm"]', String(regNo));
 
-    // 4. 結果画面 (KDIS0020) の読み込みを待つ
-    // 預託状況が書いてある場所（例：「預託済み」などの文字が含まれる要素）が出るまで待つ
-    try {
-      await page.waitForSelector('body', { timeout: 10000 });
-    } catch (e) {
-      console.log("タイムアウトしましたが続行します");
+    // 分類番号 (例: 31K) ※以前の変数があればそれを使う
+    if (req.body.classNum) {
+      await page.fill('input[name="KDIS0010_txtBnriNo"]', String(req.body.classNum));
     }
 
-    // 5. 画面全体のテキストを取得
+    // かな (例: り)
+    await page.fill('input[name="KDIS0010_selKn"]', String(classCode));
+
+    // 一連指定番号 (例: 11)
+    await page.fill('input[name="KDIS0010_txtItrnStiNo"]', String(serial));
+
+    // 3. 検索ボタンをクリック
+    // 確実に「検索」ボタンを特定してクリック
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'networkidle', timeout: 60000 }),
+      page.click('input[type="submit"], button[type="submit"], .btnSearch') 
+    ]);
+
+    // 4. 結果の取得
     const resultText = await page.evaluate(() => document.body.innerText);
 
-    // 6. システムエラー画面かどうか判定
-    if (resultText.includes("システムエラー") || resultText.includes("コンタクトセンター")) {
-      res.json({ result: "エラー: サイト側でシステムエラーが発生しました。" });
+    // エラーメッセージの判定
+    if (resultText.includes("該当する車両が存在しません")) {
+      res.json({ result: "エラー：車両が見つかりません。入力内容を確認してください。" });
     } else {
       res.json({ result: resultText });
     }
