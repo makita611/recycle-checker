@@ -62,13 +62,13 @@ app.post("/check", async (req, res) => {
     // 一連指定番号 (例: 11)
     await page.fill('input[name="KDIS0010_txtItrnStiNo"]', String(serial));
 
-    // 3. 検索ボタンをクリック
-    // 確実に「検索」ボタンを特定してクリック
+    // 3. 検索ボタンをクリック　修正
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle', timeout: 60000 }),
-      page.click('input[type="submit"], button[type="submit"], .btnSearch') 
+      // ボタンの特定を強化：「検索」というテキストを持つボタン、または特定のクラスを探す
+      page.click('button:has-text("検索"), input[value="検索"], .btnSearch')
     ]);
-
+    
     // 4. 結果の取得
     const resultText = await page.evaluate(() => document.body.innerText);
 
@@ -89,3 +89,4 @@ app.post("/check", async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`✅ Server started at port ${PORT}`));
+
